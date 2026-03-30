@@ -483,11 +483,17 @@ public final class JREUtils {
                 "-Djava.home=" + runtimeHome,
                 "-Djava.io.tmpdir=" + PathManager.DIR_CACHE.getAbsolutePath(),
                 "-Djna.boot.library.path=" + (FORCE_PURE_HYBRID_TEST_MODE ? PathManager.DIR_CACHE.getAbsolutePath() : DIR_NATIVE_LIB),
-                "-Duser.home=" + ProfilePathManager.INSTANCE.getCurrentPath(),
+                /*"-Duser.home=" + ProfilePathManager.INSTANCE.getCurrentPath(),*/
+                "-Duser.home=" + PathManager.DIR_CACHE.getAbsolutePath(),
                 "-Duser.language=" + System.getProperty("user.language"),
                 "-Dos.name=Linux",
                 "-Dos.version=Android-" + Build.VERSION.RELEASE,
-                "-Dpojav.path.minecraft=" + ProfilePathHome.getGameHome(),
+                /*"-Dpojav.path.minecraft=" + ProfilePathHome.getGameHome(),*/
+                "-Dpojav.path.minecraft=" + (
+                        ProfilePathHome.isScopedStorage()
+                                ? new File(PathManager.DIR_CACHE, "scoped_loader_root/.minecraft").getAbsolutePath()
+                                : ProfilePathHome.getGameHome()
+                ),
                 "-Dpojav.path.private.account=" + PathManager.DIR_ACCOUNT_NEW,
                 "-Duser.timezone=" + TimeZone.getDefault().getID(),
 

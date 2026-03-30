@@ -3,12 +3,14 @@ package com.movtery.zalithlauncher.ui.fragment
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.documentfile.provider.DocumentFile
 import androidx.fragment.app.Fragment
 import com.movtery.anim.AnimPlayer
 import com.movtery.anim.animations.Animations
@@ -17,6 +19,7 @@ import com.movtery.zalithlauncher.databinding.FragmentInstallGameBinding
 import com.movtery.zalithlauncher.event.sticky.SelectInstallTaskEvent
 import com.movtery.zalithlauncher.event.value.InstallGameEvent
 import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathHome
+import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathManager
 import com.movtery.zalithlauncher.feature.version.VersionsManager
 import com.movtery.zalithlauncher.feature.version.install.Addon
 import com.movtery.zalithlauncher.feature.version.install.InstallArgsUtils
@@ -150,7 +153,10 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
             if (version != null) {
                 versionText.visibility = View.VISIBLE
                 versionText.text = version
-                installText.setText(if (modInstallType) R.string.version_install_type_mod else R.string.version_install_type_version)
+                installText.setText(
+                    if (modInstallType) R.string.version_install_type_mod
+                    else R.string.version_install_type_version
+                )
             } else {
                 versionText.visibility = View.GONE
                 installText.setText(R.string.version_install_not_install)
@@ -222,7 +228,9 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
                     }
 
                     fun install() {
-                        EventBus.getDefault().post(InstallGameEvent(mcVersion, string, organizeInstallationTasks(string)))
+                        EventBus.getDefault().post(
+                            InstallGameEvent(mcVersion, string, organizeInstallationTasks(string))
+                        )
                         Tools.backToMainMenu(activity)
                     }
 
@@ -233,7 +241,9 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
                             .setWarning()
                             .setConfirmClickListener { install() }
                             .showDialog()
-                    } else install()
+                    } else {
+                        install()
+                    }
                 }
 
                 back -> ZHTools.onBackPressed(activity)
@@ -247,12 +257,14 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
         val taskMap: MutableMap<Addon, InstallTaskItem> = EnumMap(Addon::class.java)
 
         fun getModPath(): File {
-            return if (AllSettings.versionIsolation.getValue())
+            return if (AllSettings.versionIsolation.getValue()) {
                 File(
                     ProfilePathHome.getGameHome(),
                     "versions${File.separator}$customVersionName${File.separator}mods"
                 )
-            else File(ProfilePathHome.getGameHome(), "mods")
+            } else {
+                File(ProfilePathHome.getGameHome(), "mods")
+            }
         }
 
         addonMap.forEach { (addon, taskPair) ->
@@ -271,6 +283,7 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
                     }
                     taskMap[addon] = InstallTaskItem(taskPair.first, mapSize > 1, taskPair.second, endTask)
                 }
+
                 Addon.FORGE -> {
                     taskMap[addon] = InstallTaskItem(taskPair.first, false, taskPair.second) { activity, file ->
                         installInGUITask(activity, addon.addonName, taskPair.first, customVersionName) { intent, argUtils ->
@@ -278,6 +291,7 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
                         }
                     }
                 }
+
                 Addon.NEOFORGE -> {
                     taskMap[addon] = InstallTaskItem(taskPair.first, false, taskPair.second) { activity, file ->
                         installInGUITask(activity, addon.addonName, taskPair.first, customVersionName) { intent, argUtils ->
@@ -285,6 +299,7 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
                         }
                     }
                 }
+
                 Addon.FABRIC -> {
                     taskMap[addon] = InstallTaskItem(taskPair.first, false, taskPair.second) { activity, file ->
                         installInGUITask(activity, addon.addonName, taskPair.first, customVersionName) { intent, argUtils ->
@@ -292,18 +307,25 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
                         }
                     }
                 }
-                Addon.FABRIC_API -> taskMap[addon] = InstallTaskItem(taskPair.first, true, taskPair.second) { _, file ->
-                    moveFile(file, File(getModPath(), "${taskPair.first}.jar"))
+
+                Addon.FABRIC_API -> {
+                    taskMap[addon] = InstallTaskItem(taskPair.first, true, taskPair.second) { _, file ->
+                        moveFile(file, File(getModPath(), "${taskPair.first}.jar"))
+                    }
                 }
+
                 Addon.QUILT -> {
                     taskMap[addon] = InstallTaskItem(taskPair.first, false, taskPair.second) { activity, file ->
                         installInGUITask(activity, addon.addonName, taskPair.first, customVersionName) { intent, argUtils ->
-                            argUtils.setQuilt(intent, file)
+                            argUtils.setQuilt(intent, file, customVersionName)
                         }
                     }
                 }
-                Addon.QSL -> taskMap[addon] = InstallTaskItem(taskPair.first, true, taskPair.second) { _, file ->
-                    moveFile(file, File(getModPath(), "${taskPair.first}.jar"))
+
+                Addon.QSL -> {
+                    taskMap[addon] = InstallTaskItem(taskPair.first, true, taskPair.second) { _, file ->
+                        moveFile(file, File(getModPath(), "${taskPair.first}.jar"))
+                    }
                 }
             }
         }
@@ -311,9 +333,54 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
     }
 
     @Throws(Throwable::class)
-    private fun moveFile(file: File, file1: File) {
-        if (file1.exists()) FileUtils.deleteQuietly(file1)
-        FileUtils.moveFile(file, file1)
+    private fun moveFile(file: File, targetFile: File) {
+        if (!ProfilePathHome.isScopedStorage()) {
+            if (targetFile.exists()) {
+                FileUtils.deleteQuietly(targetFile)
+            }
+            FileUtils.moveFile(file, targetFile)
+            return
+        }
+
+        val context = requireContext().applicationContext
+        ProfilePathManager.init(context)
+
+        val treeUri = Uri.parse(ProfilePathManager.getCurrentPath())
+        val root = DocumentFile.fromTreeUri(context, treeUri) ?: return
+
+        val minecraft = root.findFile(".minecraft")
+            ?: root.createDirectory(".minecraft")
+            ?: return
+
+        val relativePath = targetFile.path.substringAfter(".minecraft${File.separator}", "")
+        if (relativePath.isBlank()) {
+            return
+        }
+
+        val parts = relativePath.split(File.separator).filter { it.isNotBlank() }
+        if (parts.isEmpty()) {
+            return
+        }
+
+        var currentDir: DocumentFile = minecraft
+        for (i in 0 until parts.size - 1) {
+            val part = parts[i]
+            currentDir = currentDir.findFile(part)?.takeIf { it.isDirectory }
+                ?: currentDir.createDirectory(part)
+                        ?: return
+        }
+
+        val fileName = parts.last()
+        currentDir.findFile(fileName)?.delete()
+
+        val doc = currentDir.createFile("*/*", fileName) ?: return
+        context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+            file.inputStream().use { input ->
+                input.copyTo(out)
+            }
+        }
+
+        file.delete()
     }
 
     @Throws(Throwable::class)
@@ -331,7 +398,10 @@ class InstallGameFragment : FragmentWithAnim(R.layout.fragment_install_game), Vi
 
         VersionsManager.setPendingSelectedVersion(customVersionName)
 
-        SelectRuntimeUtils.selectRuntime(activity, activity.getString(R.string.version_install_new_modloader, addonName)) { jreName ->
+        SelectRuntimeUtils.selectRuntime(
+            activity,
+            activity.getString(R.string.version_install_new_modloader, addonName)
+        ) { jreName ->
             LauncherProfiles.generateLauncherProfiles()
             intent.putExtra(JavaGUILauncherActivity.EXTRAS_JRE_NAME, jreName)
             activity.startActivity(intent)

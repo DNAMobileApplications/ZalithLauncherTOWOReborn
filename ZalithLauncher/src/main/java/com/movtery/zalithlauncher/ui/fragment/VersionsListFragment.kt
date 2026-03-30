@@ -1,7 +1,6 @@
 package com.movtery.zalithlauncher.ui.fragment
 
 import android.content.Intent
-import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -49,13 +48,6 @@ import java.util.UUID
 class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
     companion object {
         const val TAG: String = "VersionsListFragment"
-
-        // Temporary SAF storage keys.
-        // This keeps the picked SD-card folder separate from ProfilePathManager,
-        // which is still fully File-path based.
-        private const val SD_CARD_PREFS = "sd_card_storage_prefs"
-        private const val KEY_SD_TREE_URI = "sd_tree_uri"
-        private const val KEY_SD_TREE_NAME = "sd_tree_name"
     }
 
     private lateinit var binding: FragmentVersionsListBinding
@@ -72,7 +64,6 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
 
         openTreeLauncher = registerForActivityResult(
             ActivityResultContracts.OpenDocumentTree()
@@ -216,9 +207,7 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
                 )
             }
 
-            // Requires a new button in fragment_versions_list.xml:
-            // @+id/pick_sd_card_button
-            pickSdCardButton.visibility = View.GONE
+            pickSdCardButton.visibility = View.VISIBLE
             pickSdCardButton.setOnClickListener {
                 openTreeLauncher.launch(null)
             }
@@ -231,14 +220,6 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
         refresh()
     }
 
-    /**
-     * IMPORTANT:
-     * We do NOT add the tree Uri into ProfilePathManager.
-     * ProfilePathManager and the install pipeline are still File-path based,
-     * and saving a content:// tree Uri there will break installs.
-     *
-     * For now, this only persists the selected SD-card folder separately.
-     */
     private fun handlePickedTreeUri(uri: Uri?) {
         if (uri == null) {
             return
@@ -250,13 +231,12 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
         try {
             requireContext().contentResolver.takePersistableUriPermission(uri, flags)
         } catch (_: SecurityException) {
-            // Some providers may already have granted access or reject re-persisting it.
         }
 
         EditTextDialog.Builder(requireContext())
             .setTitle(R.string.profiles_path_create_new_title)
             .setAsRequired()
-            .setEditText(getSavedSdTreeName() ?: getString(R.string.profiles_path_title))
+            .setEditText(getSuggestedScopedTreeName())
             .setConfirmListener { editBox, _ ->
                 val name = editBox.text.toString().trim()
                 if (name.isEmpty()) {
@@ -264,11 +244,12 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
                     return@setConfirmListener false
                 }
 
-                saveSdTree(uri, name)
+                ProfilePathManager.addScopedProfile(requireContext(), name, uri.toString())
+                refresh()
 
                 Toast.makeText(
                     requireContext(),
-                    "SD card folder saved separately. It is not yet used as a direct install path.",
+                    "Scoped storage location saved to the list.",
                     Toast.LENGTH_LONG
                 ).show()
 
@@ -277,19 +258,13 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
             .showDialog()
     }
 
-    private fun getPrefs(): SharedPreferences {
-        return requireContext().getSharedPreferences(SD_CARD_PREFS, 0)
-    }
-
-    private fun saveSdTree(uri: Uri, name: String) {
-        getPrefs().edit()
-            .putString(KEY_SD_TREE_URI, uri.toString())
-            .putString(KEY_SD_TREE_NAME, name)
-            .apply()
-    }
-
-    private fun getSavedSdTreeName(): String? {
-        return getPrefs().getString(KEY_SD_TREE_NAME, null)
+    private fun getSuggestedScopedTreeName(): String {
+        val existingCount = ProfilePathManager.getScopedProfiles(requireContext()).size
+        return if (existingCount == 0) {
+            getString(R.string.profiles_enter_path_name)
+        } else {
+            "${getString(R.string.profiles_enter_path_name)} ${existingCount + 1}"
+        }
     }
 
     private fun refresh(refreshVersions: Boolean = false, refreshVersionInfo: Boolean = false) {
@@ -310,6 +285,15 @@ class VersionsListFragment : FragmentWithAnim(R.layout.fragment_versions_list) {
                 )
             )
             addAll(ProfilePathManager.getAllPath())
+            addAll(
+                ProfilePathManager.getScopedProfiles(requireContext()).map {
+                    ProfileItem(
+                        it.id,
+                        it.title,
+                        it.treeUri
+                    )
+                }
+            )
         }
 
         profilePathAdapter?.updateData(path)

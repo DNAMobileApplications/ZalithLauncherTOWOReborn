@@ -41,7 +41,7 @@ class GameInstaller(
         }
 
         val mcVersion = AsyncMinecraftDownloader.getListedVersion(realVersion)
-        MinecraftDownloader().start(
+        MinecraftDownloader(activity).start(
             mcVersion,
             realVersion,
             object : AsyncMinecraftDownloader.DoneListener {

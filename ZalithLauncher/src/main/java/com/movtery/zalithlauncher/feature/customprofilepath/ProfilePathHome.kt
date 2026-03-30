@@ -3,18 +3,42 @@ package com.movtery.zalithlauncher.feature.customprofilepath
 class ProfilePathHome {
     companion object {
         @JvmStatic
-        fun getGameHome(): String = "${ProfilePathManager.getCurrentPath()}/.minecraft"
+        fun getCurrentLocation(): ProfilePathLocation {
+            val rawPath = ProfilePathManager.getCurrentPath()
+            return ProfilePathLocation(
+                rawPath = rawPath,
+                isScoped = rawPath.startsWith("content://")
+            )
+        }
 
         @JvmStatic
-        fun getVersionsHome(): String = "${getGameHome()}/versions"
+        fun isScopedStorage(): Boolean {
+            return getCurrentLocation().isScoped
+        }
 
         @JvmStatic
-        fun getLibrariesHome(): String = "${getGameHome()}/libraries"
+        fun getGameHome(): String {
+            return getCurrentLocation().getGameHomePath()
+        }
 
         @JvmStatic
-        fun getAssetsHome(): String = "${getGameHome()}/assets"
+        fun getVersionsHome(): String {
+            return getCurrentLocation().getVersionsHomePath()
+        }
 
         @JvmStatic
-        fun getResourcesHome(): String = "${getGameHome()}/resources"
+        fun getLibrariesHome(): String {
+            return getCurrentLocation().getLibrariesHomePath()
+        }
+
+        @JvmStatic
+        fun getAssetsHome(): String {
+            return getCurrentLocation().getAssetsHomePath()
+        }
+
+        @JvmStatic
+        fun getResourcesHome(): String {
+            return getCurrentLocation().getResourcesHomePath()
+        }
     }
 }

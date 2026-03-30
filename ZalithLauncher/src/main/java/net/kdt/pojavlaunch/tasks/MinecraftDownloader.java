@@ -1,11 +1,14 @@
 package net.kdt.pojavlaunch.tasks;
 
+import android.content.Context;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.kdt.mcgui.ProgressLayout;
 import com.movtery.zalithlauncher.R;
 import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathHome;
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedInstallHelper;
 import com.movtery.zalithlauncher.feature.log.Logging;
 import com.movtery.zalithlauncher.feature.version.VersionsManager;
 import com.movtery.zalithlauncher.setting.AllSettings;
@@ -36,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class MinecraftDownloader {
+    private final Context mContext;
     private static final double ONE_MEGABYTE = (1024d * 1024d);
     public static final String MINECRAFT_RES = "https://resources.download.minecraft.net/";
     private static final String MAVEN_CENTRAL_REPO1 = "https://repo1.maven.org/maven2/";
@@ -44,41 +48,26 @@ public class MinecraftDownloader {
     private ArrayList<DownloaderTask> mScheduledDownloadTasks;
     private ArrayList<File> mDeclaredNatives;
     private AtomicLong mProcessedFileCounter;
-    private AtomicLong mProcessedSizeCounter; // Total bytes of processed files (passed SHA1 or downloaded)
-    private AtomicLong mInternetUsageCounter; // Total bytes downloaded over the internet
+    private AtomicLong mProcessedSizeCounter;
+    private AtomicLong mInternetUsageCounter;
     private long mTotalFileCount;
     private long mTotalSize;
-    private File mSourceJarFile; // Source client JAR selected during inheritance processing
-    private File mTargetJarFile; // Destination client JAR for the current version folder
-    private boolean mUseFileCounter; // Whether progress is tracked by file count instead of total size
+    private File mSourceJarFile;
+    private File mTargetJarFile;
+    private boolean mUseFileCounter;
 
     private static final ThreadLocal<byte[]> sThreadLocalDownloadBuffer = new ThreadLocal<>();
 
-    /**
-     * Starts the game version download process on the global executor service.
-     *
-     * Important:
-     * This downloader should only download and refresh the versions cache.
-     * It must NOT decide which version becomes current, because loader installs
-     * (Fabric/Forge/NeoForge) often download a base vanilla version first and then
-     * create the final loader version afterward.
-     *
-     * The final installer flow should decide which version becomes selected.
-     *
-     * @param version The version entry from the remote version list, if available
-     * @param realVersion The version ID
-     * @param listener The download status listener
-     */
+    public MinecraftDownloader(Context context) {
+        this.mContext = context.getApplicationContext();
+    }
+
     public void start(@Nullable JMinecraftVersionList.Version version,
                       @NonNull String realVersion,
                       @NonNull AsyncMinecraftDownloader.DoneListener listener) {
         Task.runTask(() -> {
                     downloadGame(version, realVersion);
-
-                    // Refresh the in-memory version list so newly downloaded files become visible
-                    // without requiring a manual refresh. Do not mark this version as current here.
                     VersionsManager.INSTANCE.refresh("MinecraftDownloader:start", true);
-
                     listener.onDownloadDone();
                     return null;
                 }).onThrowable(listener::onDownloadFailed)
@@ -86,13 +75,6 @@ public class MinecraftDownloader {
                 .execute();
     }
 
-    /**
-     * Downloads the game version.
-     *
-     * @param verInfo The version entry from the version list, if available
-     * @param versionName The version ID
-     * @throws Exception if an error occurs here or in one of the downloader threads
-     */
     private void downloadGame(JMinecraftVersionList.Version verInfo, String versionName) throws Exception {
         ProgressLayout.setProgress(ProgressLayout.DOWNLOAD_MINECRAFT, 0, R.string.newdl_starting);
 
@@ -133,6 +115,9 @@ public class MinecraftDownloader {
             } else {
                 ensureJarFileCopy();
                 extractNatives(versionName);
+                if (ProfilePathHome.isScopedStorage()) {
+                    ScopedInstallHelper.copyVersionToScoped(mContext, versionName);
+                }
             }
         } catch (InterruptedException e) {
             downloaderPool.shutdownNow();
@@ -153,6 +138,22 @@ public class MinecraftDownloader {
                 TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(mScheduledDownloadTasks.size(), false)
         );
+    }
+
+    private File getSharedGameHome() {
+        return new File(PathManager.DIR_GAME_HOME, ".minecraft");
+    }
+
+    private File getSharedAssetsHome() {
+        return new File(getSharedGameHome(), "assets");
+    }
+
+    private File getSharedLibrariesHome() {
+        return new File(getSharedGameHome(), "libraries");
+    }
+
+    private File getSharedResourcesHome() {
+        return new File(getSharedGameHome(), "resources");
     }
 
     private void reportProgressFileCounter(double speed) {
@@ -183,13 +184,23 @@ public class MinecraftDownloader {
                 speed
         );
     }
-
     private File createGameJsonPath(String versionId) {
-        return new File(ProfilePathHome.getVersionsHome(), versionId + File.separator + versionId + ".json");
+        if (ProfilePathHome.isScopedStorage()) {
+            return new File(
+                    PathManager.DIR_CACHE,
+                    "scoped_loader_root/.minecraft/versions/" + versionId + "/" + versionId + ".json"
+            );
+        }
+        return new File(ProfilePathHome.getVersionsHome(), versionId + "/" + versionId + ".json");
     }
-
     private File createGameJarPath(String versionId) {
-        return new File(ProfilePathHome.getVersionsHome(), versionId + File.separator + versionId + ".jar");
+        if (ProfilePathHome.isScopedStorage()) {
+            return new File(
+                    PathManager.DIR_CACHE,
+                    "scoped_loader_root/.minecraft/versions/" + versionId + "/" + versionId + ".jar"
+            );
+        }
+        return new File(ProfilePathHome.getVersionsHome(), versionId + "/" + versionId + ".jar");
     }
 
     private void ensureJarFileCopy() throws IOException {
@@ -269,7 +280,7 @@ public class MinecraftDownloader {
         if (assetIndex == null || verInfo.assets == null) return null;
 
         File targetFile = new File(
-                ProfilePathHome.getAssetsHome(),
+                getSharedAssetsHome(),
                 "indexes" + File.separator + verInfo.assets + ".json"
         );
 
@@ -382,7 +393,7 @@ public class MinecraftDownloader {
 
         String path = FileUtils.removeExtension(libArtifactPath) + ".aar";
         String downloadUrl = baseRepository + path;
-        File targetPath = new File(ProfilePathHome.getLibrariesHome(), path);
+        File targetPath = new File(getSharedLibrariesHome(), path);
 
         mDeclaredNatives.add(targetPath);
         scheduleDownload(
@@ -441,7 +452,7 @@ public class MinecraftDownloader {
             }
 
             scheduleDownload(
-                    new File(ProfilePathHome.getLibrariesHome(), libArtifactPath),
+                    new File(getSharedLibrariesHome(), libArtifactPath),
                     DownloadMirror.DOWNLOAD_CLASS_LIBRARIES,
                     url,
                     sha1,
@@ -465,8 +476,8 @@ public class MinecraftDownloader {
             File targetFile;
             String hashedPath = assetInfo.hash.substring(0, 2) + File.separator + assetInfo.hash;
             String basePath = assets.mapToResources
-                    ? ProfilePathHome.getResourcesHome()
-                    : ProfilePathHome.getAssetsHome();
+                    ? getSharedResourcesHome().getAbsolutePath()
+                    : getSharedAssetsHome().getAbsolutePath();
 
             if (assets.virtual || assets.mapToResources) {
                 targetFile = new File(basePath, asset);

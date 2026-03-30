@@ -49,6 +49,8 @@ import com.movtery.zalithlauncher.feature.accounts.AccountsManager;
 import com.movtery.zalithlauncher.feature.accounts.LocalAccountUtils;
 import com.movtery.zalithlauncher.feature.background.BackgroundManager;
 import com.movtery.zalithlauncher.feature.background.BackgroundType;
+import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathManager;
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedVersionsManager;
 import com.movtery.zalithlauncher.feature.download.item.ModLoaderWrapper;
 import com.movtery.zalithlauncher.feature.log.Logging;
 import com.movtery.zalithlauncher.feature.mod.modpack.install.InstallExtra;
@@ -145,15 +147,23 @@ public class LauncherActivity extends BaseActivity {
                     mNotificationManager.cancel(NotificationUtils.NOTIFICATION_ID_GAME_START));
         }
     };
+
+    private void initializeScopedManagers() {
+        ProfilePathManager.init(getApplicationContext());
+        ScopedVersionsManager.init(getApplicationContext());
+    }
+
     @Subscribe
     public void event(PageOpacityChangeEvent event) {
         setPageOpacity(event.getProgress());
     }
+
     @Subscribe
     public void event(MainBackgroundChangeEvent event) {
         refreshBackground();
         setPageOpacity(AllSettings.getPageOpacity().getValue());
     }
+
     @Subscribe
     public void event(SwapToLoginEvent event) {
         Fragment currentFragment = getCurrentFragment();
@@ -165,6 +175,7 @@ public class LauncherActivity extends BaseActivity {
         }
         ZHTools.swapFragmentWithAnim(currentFragment, AccountFragment.class, AccountFragment.TAG, null);
     }
+
     @Subscribe(threadMode = ThreadMode.MAIN)
     public void event(LaunchGameEvent event) {
         if (binding.progressLayout.hasProcesses()) {
@@ -404,6 +415,9 @@ public class LauncherActivity extends BaseActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        initializeScopedManagers();
+
         binding = ActivityLauncherBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
@@ -424,6 +438,9 @@ public class LauncherActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+
+        initializeScopedManagers();
+
         setPageOpacity(AllSettings.getPageOpacity().getValue());
         VersionsManager.INSTANCE.refresh("LauncherActivity:onResume", false);
     }
