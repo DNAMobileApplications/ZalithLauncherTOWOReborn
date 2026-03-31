@@ -7,6 +7,7 @@ import com.movtery.zalithlauncher.event.single.RefreshVersionsEvent
 import com.movtery.zalithlauncher.event.single.RefreshVersionsEvent.MODE.END
 import com.movtery.zalithlauncher.event.single.RefreshVersionsEvent.MODE.START
 import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathHome
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedVersionsManager
 import com.movtery.zalithlauncher.feature.log.Logging
 import com.movtery.zalithlauncher.feature.version.favorites.FavoritesVersionUtils
 import com.movtery.zalithlauncher.feature.version.utils.VersionInfoUtils
@@ -51,11 +52,15 @@ object VersionsManager {
     fun getVersions(): List<Version> = versions.toList()
 
     fun isVersionExists(versionName: String, checkJson: Boolean = false): Boolean {
-        val folder = File(ProfilePathHome.getVersionsHome(), versionName)
-        return if (checkJson) {
-            File(folder, "${folder.name}.json").exists()
+        return if (ProfilePathHome.isScopedStorage()) {
+            ScopedVersionsManager.isVersionExists(versionName, checkJson)
         } else {
-            folder.exists()
+            val folder = File(ProfilePathHome.getVersionsHome(), versionName)
+            if (checkJson) {
+                File(folder, "${folder.name}.json").exists()
+            } else {
+                folder.exists()
+            }
         }
     }
 
@@ -86,16 +91,20 @@ object VersionsManager {
         try {
             versions.clear()
 
-            val versionsHome = ProfilePathHome.getVersionsHome()
-            File(versionsHome).listFiles()?.forEach { versionFile ->
-                runCatching {
-                    processVersionFile(versionsHome, versionFile, refreshVersionInfo)
-                }.onFailure { throwable ->
-                    Logging.e(
-                        "VersionsManager",
-                        "Failed to process version folder: ${versionFile.absolutePath}",
-                        throwable
-                    )
+            if (ProfilePathHome.isScopedStorage()) {
+                versions.addAll(ScopedVersionsManager.loadVersions(refreshVersionInfo))
+            } else {
+                val versionsHome = ProfilePathHome.getVersionsHome()
+                File(versionsHome).listFiles()?.forEach { versionFile ->
+                    runCatching {
+                        processVersionFile(versionsHome, versionFile, refreshVersionInfo)
+                    }.onFailure { throwable ->
+                        Logging.e(
+                            "VersionsManager",
+                            "Failed to process version folder: ${versionFile.absolutePath}",
+                            throwable
+                        )
+                    }
                 }
             }
 
@@ -231,9 +240,16 @@ object VersionsManager {
     }
 
     fun getVersionPath(name: String): File {
-        return File(ProfilePathHome.getVersionsHome(), name)
+        return if (ProfilePathHome.isScopedStorage()) {
+            val context = ScopedVersionsManager.getInitializedContextOrNull()
+            File(
+                context?.cacheDir ?: File("."),
+                "scoped_loader_root/.minecraft/versions/$name"
+            )
+        } else {
+            File(ProfilePathHome.getVersionsHome(), name)
+        }
     }
-
     fun saveCurrentVersion(versionName: String) {
         runCatching {
             if (!::currentGameInfo.isInitialized) {
@@ -313,6 +329,19 @@ object VersionsManager {
     }
 
     private fun renameVersion(version: Version, name: String) {
+        if (ProfilePathHome.isScopedStorage()) {
+            val currentVersionName = getCurrentVersion()?.getVersionName()
+
+            if (version.getVersionName() == currentVersionName) {
+                saveCurrentVersion(name)
+            }
+
+            FavoritesVersionUtils.renameVersion(version.getVersionName(), name)
+            ScopedVersionsManager.renameVersion(version, name)
+            refresh("VersionsManager:renameVersion(scoped)")
+            return
+        }
+
         val currentVersionName = getCurrentVersion()?.getVersionName()
 
         if (version.getVersionName() == currentVersionName) {
@@ -387,6 +416,11 @@ object VersionsManager {
     }
 
     private fun copyVersion(version: Version, name: String, copyAllFile: Boolean) {
+        if (ProfilePathHome.isScopedStorage()) {
+            ScopedVersionsManager.copyVersion(version, name, copyAllFile)
+            return
+        }
+
         val versionsFolder = version.getVersionsFolder()
         val newVersionFolder = File(versionsFolder, name)
         val originalName = version.getVersionName()

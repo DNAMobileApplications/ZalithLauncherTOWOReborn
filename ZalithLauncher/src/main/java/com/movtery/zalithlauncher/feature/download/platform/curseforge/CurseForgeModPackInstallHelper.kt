@@ -2,6 +2,9 @@ package com.movtery.zalithlauncher.feature.download.platform.curseforge
 
 import com.kdt.mcgui.ProgressLayout
 import com.movtery.zalithlauncher.R
+import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathHome
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedInstallHelper
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedVersionsManager
 import com.movtery.zalithlauncher.feature.download.enums.ModLoader
 import com.movtery.zalithlauncher.feature.download.install.InstallHelper
 import com.movtery.zalithlauncher.feature.download.item.ModLoaderWrapper
@@ -22,6 +25,7 @@ import net.kdt.pojavlaunch.progresskeeper.ProgressKeeper
 import net.kdt.pojavlaunch.tasks.SpeedCalculator
 import net.kdt.pojavlaunch.utils.FileUtils
 import net.kdt.pojavlaunch.utils.ZipUtils
+import org.apache.commons.io.FileUtils as ApacheFileUtils
 import java.io.File
 import java.io.IOException
 import java.util.zip.ZipFile
@@ -32,9 +36,33 @@ class CurseForgeModPackInstallHelper {
         @Throws(Exception::class)
         fun startInstall(api: ApiHandler, versionItem: VersionItem, customName: String): ModLoaderWrapper? {
             return InstallHelper.installModPack(versionItem, customName) { modpackFile, targetPath ->
-                installZip(api, modpackFile, targetPath)
+                if (targetPath.exists()) {
+                    ApacheFileUtils.deleteQuietly(targetPath)
+                }
+                targetPath.mkdirs()
+
+                val result = installZip(api, modpackFile, targetPath)
+
+                if (ProfilePathHome.isScopedStorage()) {
+                    ScopedVersionsManager.getInitializedContextOrNull()?.let { context ->
+                        ScopedInstallHelper.copyVersionToScoped(context, customName)
+                    }
+                }
+
+                result
             }
         }
+
+        /*private fun getActualTargetPath(customName: String, targetPath: File): File {
+            if (!ProfilePathHome.isScopedStorage()) {
+                return targetPath
+            }
+
+            val context = ScopedVersionsManager.getInitializedContextOrNull()
+                ?: return targetPath
+
+            return File(context.cacheDir, "scoped_install/$customName")
+        }*/
 
         @Throws(Exception::class)
         fun installZip(api: ApiHandler, zipFile: File, targetPath: File): ModLoaderWrapper? {
@@ -44,12 +72,14 @@ class CurseForgeModPackInstallHelper {
                     CurseManifest::class.java
                 )
                 if (!ModPackUtils.verifyManifest(curseManifest)) {
-                    Logging.i("CurseForgeModPackInstallHelper", "manifest verification failed")
+                    Logging.i("CurseForgeModPackInstallHelper", "Manifest verification failed")
                     return null
                 }
+
                 var progressUpdateTime = 0L
                 val speedCalculator = SpeedCalculator()
                 val modDownloader: ModDownloader = getModDownloader(api, targetPath, curseManifest)
+
                 modDownloader.awaitFinish { count: Int, totalCount: Int, downloadedSize: Long ->
                     val currentTime = ZHTools.getCurrentTimeMillis()
                     if (currentTime - progressUpdateTime < 150) return@awaitFinish
@@ -65,6 +95,7 @@ class CurseForgeModPackInstallHelper {
                         FileTools.formatFileSize(speedCalculator.feed(downloadedSize))
                     )
                 }
+
                 val overridesDir: String = curseManifest.overrides ?: "overrides"
                 ZipUtils.zipExtract(modpackZipFile, overridesDir, targetPath)
                 return createInfo(curseManifest.minecraft)
@@ -79,17 +110,29 @@ class CurseForgeModPackInstallHelper {
         ): ModDownloader {
             val modDownloader = ModDownloader(File(instanceDestination, "mods"), true)
             val fileCount = curseManifest.files.size
+
             for (i in 0 until fileCount) {
                 val curseFile = curseManifest.files[i]
                 modDownloader.submitDownload {
                     val url = CurseForgeCommonUtils.getDownloadUrl(api, curseFile.projectID, curseFile.fileID)
-                    if (url == null && curseFile.required) throw IOException(
-                        "Failed to obtain download URL for ${StringUtils.insertSpace(curseFile.projectID, curseFile.fileID)}"
+                    if (url == null && curseFile.required) {
+                        throw IOException(
+                            "Failed to obtain download URL for ${
+                                StringUtils.insertSpace(curseFile.projectID, curseFile.fileID)
+                            }"
+                        )
+                    } else if (url == null) {
+                        return@submitDownload null
+                    }
+
+                    ModDownloader.FileInfo(
+                        url,
+                        FileUtils.getFileName(url),
+                        getDownloadSha1(api, curseFile.projectID, curseFile.fileID)
                     )
-                    else if (url == null) return@submitDownload null
-                    ModDownloader.FileInfo(url, FileUtils.getFileName(url), getDownloadSha1(api, curseFile.projectID, curseFile.fileID))
                 }
             }
+
             return modDownloader
         }
 
@@ -102,29 +145,33 @@ class CurseForgeModPackInstallHelper {
                 }
             }
             if (primaryModLoader == null) primaryModLoader = minecraft.modLoaders[0]
+
             val modLoaderId = primaryModLoader!!.id
             val dashIndex = modLoaderId.indexOf('-')
             val modLoaderName = modLoaderId.substring(0, dashIndex)
             val modLoaderVersion = modLoaderId.substring(dashIndex + 1)
-            Logging.i("CurseForgeModPackInstallHelper",
+
+            Logging.i(
+                "CurseForgeModPackInstallHelper",
                 StringUtils.insertSpace(modLoaderId, modLoaderName, modLoaderVersion)
             )
-            val modloader: ModLoader
-            when (modLoaderName) {
+
+            val modloader: ModLoader = when (modLoaderName) {
                 "forge" -> {
-                    Logging.i("ModLoader", "Forge, or Quilt? ...")
-                    modloader = ModLoader.FORGE
+                    Logging.i("ModLoader", "Forge")
+                    ModLoader.FORGE
                 }
                 "neoforge" -> {
                     Logging.i("ModLoader", "NeoForge")
-                    modloader = ModLoader.NEOFORGE
+                    ModLoader.NEOFORGE
                 }
                 "fabric" -> {
                     Logging.i("ModLoader", "Fabric")
-                    modloader = ModLoader.FABRIC
+                    ModLoader.FABRIC
                 }
                 else -> return null
             }
+
             return ModLoaderWrapper(modloader, modLoaderVersion, minecraft.version)
         }
     }

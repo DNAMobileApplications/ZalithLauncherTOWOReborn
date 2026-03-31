@@ -6,6 +6,7 @@ import com.kdt.mcgui.ProgressLayout
 import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathHome
 import com.movtery.zalithlauncher.utils.path.LibPath
+import com.movtery.zalithlauncher.utils.path.PathManager
 import net.kdt.pojavlaunch.JavaGUILauncherActivity
 import net.kdt.pojavlaunch.progresskeeper.ProgressKeeper
 import java.io.File
@@ -18,14 +19,27 @@ class InstallArgsUtils(
     private val mcVersion: String,
     private val loaderVersion: String
 ) {
+
+    private fun getInstallDir(customName: String): String {
+        return if (ProfilePathHome.isScopedStorage()) {
+            File(PathManager.DIR_CACHE, "scoped_loader_root/.minecraft").apply {
+                mkdirs()
+            }.absolutePath
+        } else {
+            ProfilePathHome.getGameHome()
+        }
+    }
+
     fun setFabric(intent: Intent, jarFile: File, customName: String) {
+        val installDir = getInstallDir(customName)
+
         val args = buildString {
             append("-DprofileName=\"$customName\" ")
             append("-javaagent:${LibPath.MIO_FABRIC_AGENT.absolutePath} ")
             append("-jar ${jarFile.absolutePath} client ")
             append("-mcversion \"$mcVersion\" ")
             append("-loader \"$loaderVersion\" ")
-            append("-dir \"${ProfilePathHome.getGameHome()}\"")
+            append("-dir \"$installDir\"")
         }
 
         intent.putExtra("javaArgs", args)
@@ -33,12 +47,10 @@ class InstallArgsUtils(
         intent.putExtra(JavaGUILauncherActivity.FORCE_SHOW_LOG, true)
     }
 
-    @Deprecated(
-        message = "JRE 8 is not supported for installation. On newer JRE versions, the installer does not exit automatically, so this method is currently not used."
-    )
-    fun setQuilt(intent: Intent, jarFile: File) {
+    fun setQuilt(intent: Intent, jarFile: File, customName: String) {
+        val installDir = getInstallDir(customName)
         val args =
-            "-jar ${jarFile.absolutePath} install client \"$mcVersion\" \"$loaderVersion\" --install-dir=\"${ProfilePathHome.getGameHome()}\""
+            "-jar ${jarFile.absolutePath} install client \"$mcVersion\" \"$loaderVersion\" --install-dir=\"$installDir\""
 
         intent.putExtra("javaArgs", args)
         intent.putExtra(JavaGUILauncherActivity.SUBSCRIBE_JVM_EXIT_EVENT, true)
@@ -55,11 +67,9 @@ class InstallArgsUtils(
         intent.putExtra("javaArgs", args)
     }
 
-    @Throws(Throwable::class)
     fun setNeoForge(intent: Intent, jarFile: File, customName: String) {
-        forgeLikeCustomVersionName(jarFile, customName)
-
-        val args = "-jar ${jarFile.absolutePath} --installClient \"${ProfilePathHome.getGameHome()}\""
+        val installDir = getInstallDir(customName)
+        val args = "-jar ${jarFile.absolutePath} --installClient \"$installDir\""
 
         intent.putExtra("javaArgs", args)
         intent.putExtra(JavaGUILauncherActivity.SUBSCRIBE_JVM_EXIT_EVENT, true)
@@ -77,8 +87,8 @@ class InstallArgsUtils(
     }
 
     /**
-     * Updates the "version" key in the installer’s install_profile.json file
-     * for Forge or NeoForge so the generated version folder uses customName.
+     * Updates the version name inside install_profile.json for Forge-like installers
+     * so the generated version folder uses the custom launcher name.
      */
     @Throws(Throwable::class)
     private fun forgeLikeCustomVersionName(jarFile: File, customName: String) {
@@ -146,13 +156,10 @@ class InstallArgsUtils(
     private fun modifyJsonFile(profileJson: File, customName: String) {
         val jsonObject = JsonParser.parseString(profileJson.readText()).asJsonObject
 
-        // Check whether the "spec" key exists to determine if this is a newer installer.
         if (jsonObject.has("spec")) {
             if (!jsonObject.has("version")) {
                 throw IOException("Unable to find version key.")
             }
-
-            // For newer installers, update "version" to customName.
             jsonObject.addProperty("version", customName)
         } else {
             if (!jsonObject.has("install")) {
@@ -164,7 +171,6 @@ class InstallArgsUtils(
                 throw IOException("Unable to find install-target key.")
             }
 
-            // For older installers, update "target" to customName.
             install.addProperty("target", customName)
             jsonObject.add("install", install)
         }
@@ -174,8 +180,6 @@ class InstallArgsUtils(
 
     @Throws(Throwable::class)
     private fun writeTempJarFile(jarFile: File, tempJarFile: File, profileJson: File) {
-        // Skip only .SF and .RSA files in META-INF to avoid signature verification issues
-        // after install_profile.json is modified.
         fun shouldSkip(entryName: String): Boolean {
             return entryName.startsWith("META-INF/") &&
                     (entryName.endsWith(".SF") || entryName.endsWith(".RSA"))

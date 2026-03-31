@@ -13,7 +13,7 @@ import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.databinding.ItemProfilePathBinding
 import com.movtery.zalithlauncher.databinding.ViewPathManagerBinding
 import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathManager
-import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathManager.setCurrentPathId
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedVersionsManager
 import com.movtery.zalithlauncher.feature.version.VersionsManager
 import com.movtery.zalithlauncher.setting.AllSettings.Companion.launcherProfile
 import com.movtery.zalithlauncher.ui.dialog.EditTextDialog
@@ -26,12 +26,15 @@ import com.movtery.zalithlauncher.utils.ZHTools
 class ProfilePathAdapter(
     private val fragment: FragmentWithAnim,
     private val view: RecyclerView
-) :
-    RecyclerView.Adapter<ProfilePathAdapter.ViewHolder>() {
+) : RecyclerView.Adapter<ProfilePathAdapter.ViewHolder>() {
+
     private val mData: MutableList<ProfileItem> = ArrayList()
     private val radioButtonList: MutableList<RadioButton> = mutableListOf()
-    //如果没有存储权限，那么旧设置为默认路径
-    private var currentId: String? = if (StoragePermissionsUtils.checkPermissions()) launcherProfile.getValue() else "default"
+
+    // If storage permission is unavailable, force the selection back to the default path.
+    private var currentId: String? =
+        if (StoragePermissionsUtils.checkPermissions()) launcherProfile.getValue() else "default"
+
     private val managerPopupWindow: PopupWindow = PopupWindow().apply {
         isFocusable = true
         isOutsideTouchable = true
@@ -60,12 +63,20 @@ class ProfilePathAdapter(
 
     @SuppressLint("NotifyDataSetChanged")
     fun updateData(data: MutableList<ProfileItem>) {
-        this.mData.clear()
-        this.mData.addAll(data)
+        currentId = if (StoragePermissionsUtils.checkPermissions()) {
+            launcherProfile.getValue()
+        } else {
+            "default"
+        }
+
+        mData.clear()
+        mData.addAll(data)
+
         radioButtonList.apply {
-            forEach { radioButton -> radioButton.isChecked = false }
+            forEach { it.isChecked = false }
             clear()
         }
+
         notifyDataSetChanged()
         view.scheduleLayoutAnimation()
     }
@@ -74,6 +85,11 @@ class ProfilePathAdapter(
     private fun refresh() {
         ProfilePathManager.save(mData)
         ProfilePathManager.refreshPath()
+        currentId = if (StoragePermissionsUtils.checkPermissions()) {
+            launcherProfile.getValue()
+        } else {
+            "default"
+        }
         notifyDataSetChanged()
         view.scheduleLayoutAnimation()
     }
@@ -82,10 +98,25 @@ class ProfilePathAdapter(
         managerPopupWindow.dismiss()
     }
 
-    private fun setPathId(id: String) {
-        currentId = id
-        setCurrentPathId(id)
-        radioButtonList.forEach { radioButton -> radioButton.isChecked = radioButton.tag.toString() == id }
+    @SuppressLint("NotifyDataSetChanged")
+    private fun setSelectedProfile(profileItem: ProfileItem) {
+        val context = fragment.requireContext().applicationContext
+
+        currentId = profileItem.id
+
+        ProfilePathManager.init(context)
+        if (profileItem.path.startsWith("content://")) {
+            ScopedVersionsManager.init(context)
+        }
+
+        ProfilePathManager.setCurrentPathId(profileItem.id)
+
+        radioButtonList.forEach { radioButton ->
+            radioButton.isChecked = radioButton.tag.toString() == profileItem.id
+        }
+
+        notifyDataSetChanged()
+        view.scheduleLayoutAnimation()
     }
 
     inner class ViewHolder(val binding: ItemProfilePathBinding) :
@@ -99,6 +130,7 @@ class ProfilePathAdapter(
                         isChecked = currentId == profileItem.id
                     }
                 )
+
                 title.text = profileItem.title
                 path.text = profileItem.path
                 path.isSelected = true
@@ -110,7 +142,7 @@ class ProfilePathAdapter(
                             title = R.string.profiles_path_title,
                             permissionGranted = object : StoragePermissionsUtils.PermissionGranted {
                                 override fun granted() {
-                                    setPathId(profileItem.id)
+                                    setSelectedProfile(profileItem)
                                 }
 
                                 override fun cancelled() {}
@@ -118,6 +150,7 @@ class ProfilePathAdapter(
                         )
                     }
                 }
+
                 root.setOnClickListener(onClickListener)
                 radioButton.setOnClickListener(onClickListener)
 
@@ -140,57 +173,102 @@ class ProfilePathAdapter(
                     when (v) {
                         gotoView -> {
                             val bundle = Bundle()
-                            bundle.putString(FilesFragment.BUNDLE_LOCK_PATH, Environment.getExternalStorageDirectory().absolutePath)
+                            bundle.putString(
+                                FilesFragment.BUNDLE_LOCK_PATH,
+                                Environment.getExternalStorageDirectory().absolutePath
+                            )
                             bundle.putString(FilesFragment.BUNDLE_LIST_PATH, profileItem.path)
                             ZHTools.swapFragmentWithAnim(
                                 fragment,
-                                FilesFragment::class.java, FilesFragment.TAG, bundle
+                                FilesFragment::class.java,
+                                FilesFragment.TAG,
+                                bundle
                             )
                         }
+
                         rename -> {
                             EditTextDialog.Builder(context)
                                 .setTitle(R.string.generic_rename)
                                 .setEditText(profileItem.title)
                                 .setAsRequired()
                                 .setConfirmListener { editBox, _ ->
-                                    val string = editBox.text.toString()
+                                    val newTitle = editBox.text.toString()
 
-                                    mData[itemIndex].title = string
-                                    refresh()
+                                    if (profileItem.path.startsWith("content://")) {
+                                        ProfilePathManager.renameScopedProfile(
+                                            context,
+                                            profileItem.id,
+                                            newTitle
+                                        )
+                                        mData[itemIndex].title = newTitle
+                                        notifyItemChanged(itemIndex)
+                                        view.scheduleLayoutAnimation()
+                                    } else {
+                                        mData[itemIndex].title = newTitle
+                                        refresh()
+                                    }
                                     true
-                                }.showDialog()
+                                }
+                                .showDialog()
                         }
+
                         delete -> {
                             TipDialog.Builder(context)
                                 .setTitle(context.getString(R.string.profiles_path_delete_title))
                                 .setMessage(R.string.profiles_path_delete_message)
                                 .setCancelable(false)
                                 .setConfirmClickListener {
-                                    if (currentId == profileItem.id) {
-                                        //如果删除的是当前选中的路径，那么将自动选择为默认路径
-                                        setPathId("default")
+                                    val wasCurrent = currentId == profileItem.id
+
+                                    if (profileItem.path.startsWith("content://")) {
+                                        ProfilePathManager.removeScopedProfileById(
+                                            context,
+                                            profileItem.id
+                                        )
+                                    } else {
+                                        ProfilePathManager.removePathById(profileItem.id)
                                     }
+
                                     mData.removeAt(itemIndex)
-                                    refresh()
-                                }.showDialog()
+
+                                    if (wasCurrent) {
+                                        val defaultItem = mData.firstOrNull { it.id == "default" }
+                                        if (defaultItem != null) {
+                                            setSelectedProfile(defaultItem)
+                                        } else {
+                                            currentId = "default"
+                                            notifyDataSetChanged()
+                                            view.scheduleLayoutAnimation()
+                                        }
+                                    } else {
+                                        notifyItemRemoved(itemIndex)
+                                        notifyItemRangeChanged(itemIndex, mData.size - itemIndex)
+                                        view.scheduleLayoutAnimation()
+                                    }
+                                }
+                                .showDialog()
                         }
+
                         else -> {}
                     }
                     managerPopupWindow.dismiss()
                 }
+
                 gotoView.setOnClickListener(onClickListener)
                 rename.setOnClickListener(onClickListener)
                 delete.setOnClickListener(onClickListener)
+
                 if (isDefault) {
                     renameLayout.visibility = View.GONE
                     deleteLayout.visibility = View.GONE
                 }
             }
+
             managerPopupWindow.apply {
                 viewBinding.root.measure(0, 0)
-                this.contentView = viewBinding.root
-                this.width = viewBinding.root.measuredWidth
-                this.height = viewBinding.root.measuredHeight
+                contentView = viewBinding.root
+                width = viewBinding.root.measuredWidth
+                height = viewBinding.root.measuredHeight
                 showAsDropDown(anchorView, anchorView.measuredWidth, 0)
             }
         }

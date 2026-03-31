@@ -133,7 +133,7 @@ object LaunchGame {
         if (!networkAvailable) {
             listener.onDownloadDone()
         } else {
-            MinecraftDownloader().start(mcVersion, versionName, listener)
+            MinecraftDownloader(context).start(mcVersion, versionName, listener)
         }
     }
 

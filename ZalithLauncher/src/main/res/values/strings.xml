@@ -267,6 +267,7 @@
     <string name="permissions_storage_for_renderer_config">The selected renderer plugin %s may have settings. If %s lacks storage access, its settings cannot be read. Grant permission for proper function.</string>
     <!-- Profiles Path -->
     <string name="profiles_path_title">Game Path Management</string>
+    <string name="profiles_enter_path_name">Path Name</string>
     <string name="profiles_path_default">Default Path</string>
     <string name="profiles_path_settings">Open Path Settings</string>
     <string name="profiles_path_settings_goto">Open this directory</string>

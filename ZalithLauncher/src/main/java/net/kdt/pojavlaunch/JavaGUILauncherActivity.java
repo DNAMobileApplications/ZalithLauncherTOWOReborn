@@ -19,6 +19,10 @@ import com.getkeepsafe.taptargetview.TapTargetView;
 import com.movtery.zalithlauncher.R;
 import com.movtery.zalithlauncher.databinding.ActivityJavaGuiLauncherBinding;
 import com.movtery.zalithlauncher.event.value.JvmExitEvent;
+import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathHome;
+import com.movtery.zalithlauncher.feature.customprofilepath.ProfilePathManager;
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedInstallHelper;
+import com.movtery.zalithlauncher.feature.customprofilepath.ScopedVersionsManager;
 import com.movtery.zalithlauncher.feature.log.Logging;
 import com.movtery.zalithlauncher.launch.LaunchArgs;
 import com.movtery.zalithlauncher.setting.AllSettings;
@@ -59,29 +63,70 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     public static final String EXTRAS_JRE_NAME = "jre_name";
     public static final String SUBSCRIBE_JVM_EXIT_EVENT = "subscribe_jvm_exit_event";
     public static final String FORCE_SHOW_LOG = "force_show_log";
+
     private ActivityJavaGuiLauncherBinding binding;
     private GestureDetector mGestureDetector;
 
     private boolean mIsVirtualMouseEnabled;
     private boolean mSubscribeJvmExitEvent;
+    private String mPendingScopedProfileName;
+
+    private void initializeScopedManagers() {
+        ProfilePathManager.init(getApplicationContext());
+        ScopedVersionsManager.init(getApplicationContext());
+    }
+
+    private String extractProfileName(String javaArgs) {
+        if (javaArgs == null) return null;
+
+        String key = "-DprofileName=";
+        int start = javaArgs.indexOf(key);
+        if (start < 0) return null;
+
+        start += key.length();
+        if (start >= javaArgs.length()) return null;
+
+        // Quoted value
+        if (javaArgs.charAt(start) == '"') {
+            start++;
+            int end = javaArgs.indexOf('"', start);
+            if (end == -1) end = javaArgs.length();
+            return javaArgs.substring(start, end).trim();
+        }
+
+        int nextJar = javaArgs.indexOf(" -jar ", start);
+        int nextMc = javaArgs.indexOf(" -mcversion ", start);
+        int nextLoader = javaArgs.indexOf(" -loader ", start);
+        int nextDir = javaArgs.indexOf(" -dir ", start);
+
+        int end = javaArgs.length();
+        if (nextJar != -1 && nextJar < end) end = nextJar;
+        if (nextMc != -1 && nextMc < end) end = nextMc;
+        if (nextLoader != -1 && nextLoader < end) end = nextLoader;
+        if (nextDir != -1 && nextDir < end) end = nextDir;
+
+        return javaArgs.substring(start, end).trim();
+    }
 
     @SuppressLint("ClickableViewAccessibility")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        initializeScopedManagers();
+
         binding = ActivityJavaGuiLauncherBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
         try {
             File latestLogFile = new File(PathManager.DIR_GAME_HOME, "latestlog.txt");
-            if (!latestLogFile.exists() && !latestLogFile.createNewFile())
+            if (!latestLogFile.exists() && !latestLogFile.createNewFile()) {
                 throw new IOException("Failed to create a new log file");
+            }
             Logger.begin(latestLogFile.getAbsolutePath());
         } catch (IOException e) {
             Tools.showError(this, e, true);
         }
 
-        // 防止系统息屏
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         MainActivity.GLOBAL_CLIPBOARD = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -103,39 +148,36 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
         binding.mousePointer.post(() -> {
             ViewGroup.LayoutParams params = binding.mousePointer.getLayoutParams();
             Drawable drawable = binding.mousePointer.getDrawable();
-            Dimension mousescale = ImageUtils.resizeWithRatio(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(),
-                    AllSettings.getMouseScale().getValue());
+            Dimension mousescale = ImageUtils.resizeWithRatio(
+                    drawable.getIntrinsicWidth(),
+                    drawable.getIntrinsicHeight(),
+                    AllSettings.getMouseScale().getValue()
+            );
             params.width = (int) (mousescale.width * 0.5);
             params.height = (int) (mousescale.height * 0.5);
         });
 
         binding.mainTouchpad.setOnTouchListener(new View.OnTouchListener() {
-            float prevX = 0, prevY = 0;
+            float prevX = 0;
+            float prevY = 0;
+
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                // MotionEvent reports input details from the touch screen
-                // and other input controls. In this case, you are only
-                // interested in events where the touch position changed.
-                // int index = event.getActionIndex();
                 int action = event.getActionMasked();
 
                 float x = event.getX();
                 float y = event.getY();
-                float mouseX, mouseY;
-
-                mouseX = binding.mousePointer.getX();
-                mouseY = binding.mousePointer.getY();
+                float mouseX = binding.mousePointer.getX();
+                float mouseY = binding.mousePointer.getY();
 
                 if (mGestureDetector.onTouchEvent(event)) {
-                    sendScaledMousePosition(mouseX,mouseY);
+                    sendScaledMousePosition(mouseX, mouseY);
                     AWTInputBridge.sendMousePress(AWTInputEvent.BUTTON1_DOWN_MASK);
-                } else {
-                    if (action == MotionEvent.ACTION_MOVE) { // 2
-                        mouseX = Math.max(0, Math.min(CallbackBridge.physicalWidth, mouseX + x - prevX));
-                        mouseY = Math.max(0, Math.min(CallbackBridge.physicalHeight, mouseY + y - prevY));
-                        placeMouseAt(mouseX, mouseY);
-                        sendScaledMousePosition(mouseX, mouseY);
-                    }
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    mouseX = Math.max(0, Math.min(CallbackBridge.physicalWidth, mouseX + x - prevX));
+                    mouseY = Math.max(0, Math.min(CallbackBridge.physicalHeight, mouseY + y - prevY));
+                    placeMouseAt(mouseX, mouseY);
+                    sendScaledMousePosition(mouseX, mouseY);
                 }
 
                 prevY = y;
@@ -154,12 +196,13 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
             }
 
             switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_UP: // 1
-                case MotionEvent.ACTION_CANCEL: // 3
-                case MotionEvent.ACTION_POINTER_UP: // 6
-                    break;
-                case MotionEvent.ACTION_MOVE: // 2
+                case MotionEvent.ACTION_MOVE:
                     sendScaledMousePosition(x + binding.textureView.getX(), y);
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                case MotionEvent.ACTION_POINTER_UP:
+                default:
                     break;
             }
             return true;
@@ -168,34 +211,45 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
         try {
             placeMouseAt(CallbackBridge.physicalWidth / 2f, CallbackBridge.physicalHeight / 2f);
             Bundle extras = getIntent().getExtras();
-            if(extras == null) {
+            if (extras == null) {
                 finish();
                 return;
             }
+
             mSubscribeJvmExitEvent = extras.getBoolean(SUBSCRIBE_JVM_EXIT_EVENT, false);
+
             if (extras.getBoolean(FORCE_SHOW_LOG, false)) {
                 binding.launcherLoggerView.forceShow(this::forceClose);
                 showLogFloodWarning();
             }
 
             final String javaArgs = extras.getString("javaArgs");
+            mPendingScopedProfileName = extractProfileName(javaArgs);
+
             final Uri resourceUri = extras.getParcelable("modUri");
             final String jreName = extras.getString(EXTRAS_JRE_NAME, null);
-            if(extras.getBoolean("openLogOutput", false)) openLogOutput(null);
+
+            if (extras.getBoolean("openLogOutput", false)) {
+                openLogOutput(null);
+            }
+
             if (javaArgs != null) {
                 startModInstaller(null, javaArgs, jreName);
-            }else if(resourceUri != null) {
-                AlertDialog dialog = ZHTools.showTaskRunningDialog(this, getString(R.string.multirt_progress_caching));
+            } else if (resourceUri != null) {
+                AlertDialog dialog = ZHTools.showTaskRunningDialog(
+                        this,
+                        getString(R.string.multirt_progress_caching)
+                );
                 Task.runTask(() -> {
                             startModInstallerWithUri(resourceUri, jreName);
                             return null;
-                        }).ended(TaskExecutors.getAndroidUI(), r -> dialog.dismiss())
+                        })
+                        .ended(TaskExecutors.getAndroidUI(), r -> dialog.dismiss())
                         .execute();
             }
         } catch (Throwable th) {
             Tools.showError(this, th, true);
         }
-
 
         getOnBackPressedDispatcher().addCallback(new OnBackPressedCallback(true) {
             @Override
@@ -205,17 +259,42 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
         });
     }
 
-    @Subscribe()
+    @Subscribe
     public void event(JvmExitEvent event) {
-        if (mSubscribeJvmExitEvent) {
-            ZHTools.killProcess();
+        if (!mSubscribeJvmExitEvent) {
+            return;
         }
+
+        boolean installSucceeded = true;
+        try {
+            installSucceeded = event.getExitCode() == 0;
+        } catch (Throwable ignored) {
+        }
+
+        if (installSucceeded && ProfilePathHome.isScopedStorage()) {
+            try {
+                initializeScopedManagers();
+                if (mPendingScopedProfileName != null && !mPendingScopedProfileName.isEmpty()) {
+                    ScopedInstallHelper.copyVersionToScoped(
+                            getApplicationContext(),
+                            mPendingScopedProfileName
+                    );
+                }
+            } catch (Throwable t) {
+                Logging.e("ScopedInstall", "Final scoped copy failed", t);
+            }
+        }
+
+        ZHTools.killProcess();
     }
 
     private void showLogFloodWarning() {
         if (NewbieGuideUtils.showOnlyOne("LogFloodWarning")) return;
-        TapTargetView.showFor(this,
-                NewbieGuideUtils.getSimpleTarget(this, binding.launcherLoggerView.getBinding().toggleLog,
+        TapTargetView.showFor(
+                this,
+                NewbieGuideUtils.getSimpleTarget(
+                        this,
+                        binding.launcherLoggerView.getBinding().toggleLog,
                         getString(R.string.version_install_log_flood_warning)
                 )
         );
@@ -225,32 +304,31 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
         try {
             File cacheFile = new File(getCacheDir(), "mod-installer-temp");
             InputStream contentStream = getContentResolver().openInputStream(uri);
-            if(contentStream == null) throw new IOException("Failed to open content stream");
+            if (contentStream == null) throw new IOException("Failed to open content stream");
             try (FileOutputStream fileOutputStream = new FileOutputStream(cacheFile)) {
                 IOUtils.copy(contentStream, fileOutputStream);
             }
             contentStream.close();
             startModInstaller(cacheFile, null, jreName);
-        }catch (IOException e) {
+        } catch (IOException e) {
             Tools.showError(this, e, true);
         }
     }
 
     public Runtime selectRuntime(File modFile) {
         int javaVersion = getJavaVersion(modFile);
-        if(javaVersion == -1) {
+        if (javaVersion == -1) {
             finalErrorDialog(getString(R.string.execute_jar_failed_to_read_file));
             return null;
         }
         String nearestRuntime = MultiRTUtils.getNearestJreName(javaVersion);
-        if(nearestRuntime == null) {
+        if (nearestRuntime == null) {
             finalErrorDialog(getString(R.string.multirt_nocompatiblert, javaVersion));
             return null;
         }
         Runtime selectedRuntime = MultiRTUtils.forceReread(nearestRuntime);
         int selectedJavaVersion = Math.max(javaVersion, selectedRuntime.javaVersion);
-        // Don't allow versions higher than Java 17 because our caciocavallo implementation does not allow for it
-        if(selectedJavaVersion > 17) {
+        if (selectedJavaVersion > 17) {
             finalErrorDialog(getString(R.string.execute_jar_incompatible_runtime, selectedJavaVersion));
             return null;
         }
@@ -259,13 +337,10 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
 
     private File findModPath(List<String> argList) {
         int argsSize = argList.size();
-        for(int i = 0; i < argsSize; i++) {
-            // Look for the -jar argument
-            if(!argList.get(i).equals("-jar")) continue;
-            int pathIndex = i+1;
-            // Check if the supposed path is out of the argument bounds
-            if(pathIndex >= argsSize) return null;
-            // Use the path as a file
+        for (int i = 0; i < argsSize; i++) {
+            if (!argList.get(i).equals("-jar")) continue;
+            int pathIndex = i + 1;
+            if (pathIndex >= argsSize) return null;
             return new File(argList.get(pathIndex));
         }
         return null;
@@ -280,21 +355,17 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
             char c = str.charAt(i);
 
             if (c == '"' && (i == 0 || str.charAt(i - 1) != '\\')) {
-                // 切换引号状态（忽略转义引号）
                 inQuotes = !inQuotes;
             } else if (Character.isWhitespace(c) && !inQuotes) {
-                // 如果不在引号内且遇到空格，则结束当前部分并添加到结果中
                 if (currentPart.length() > 0) {
                     result.add(currentPart.toString());
-                    currentPart.setLength(0); // 清空当前部分
+                    currentPart.setLength(0);
                 }
             } else {
-                // 将字符添加到当前部分
                 currentPart.append(c);
             }
         }
 
-        // 添加最后一部分（如果有的话）
         if (currentPart.length() > 0) {
             result.add(currentPart.toString());
         }
@@ -304,33 +375,32 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
 
     private void startModInstaller(File modFile, String javaArgs, String jreName) {
         new Thread(() -> {
-            // Maybe replace with more advanced arg parsing logic later
+            initializeScopedManagers();
+
             List<String> argList = javaArgs != null ? splitPreservingQuotes(javaArgs) : null;
             File selectedMod = modFile;
             if (selectedMod == null && argList != null) {
-                // If modFile is not specified directly, try to extract the -jar argument from the javaArgs
                 selectedMod = findModPath(argList);
             }
+
             Runtime selectedRuntime;
             if (jreName == null) {
                 if (selectedMod == null) {
-                    // We were unable to find out the path to the mod. In that case, use the default runtime.
                     selectedRuntime = MultiRTUtils.forceReread(AllSettings.getDefaultRuntime().getValue());
                 } else {
-                    // Autoselect it properly in the other case.
                     selectedRuntime = selectRuntime(selectedMod);
-                    // If the selection failed, just return. The autoselect function has already shown the dialog.
                     if (selectedRuntime == null) return;
                 }
             } else {
                 selectedRuntime = MultiRTUtils.forceReread(jreName);
             }
+
             launchJavaRuntime(selectedRuntime, modFile, argList);
         }, "JREMainThread").start();
     }
 
     private void finalErrorDialog(CharSequence msg) {
-        runOnUiThread(()-> new TipDialog.Builder(this)
+        runOnUiThread(() -> new TipDialog.Builder(this)
                 .setTitle(R.string.generic_error)
                 .setMessage(msg.toString())
                 .setWarning()
@@ -343,6 +413,7 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     @Override
     public void onResume() {
         super.onResume();
+        initializeScopedManagers();
         final int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
         final View decorView = getWindow().getDecorView();
         decorView.setSystemUiVisibility(uiOptions);
@@ -353,13 +424,13 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     public boolean onTouch(View v, MotionEvent e) {
         boolean isDown;
         switch (e.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN: // 0
-            case MotionEvent.ACTION_POINTER_DOWN: // 5
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_POINTER_DOWN:
                 isDown = true;
                 break;
-            case MotionEvent.ACTION_UP: // 1
-            case MotionEvent.ACTION_CANCEL: // 3
-            case MotionEvent.ACTION_POINTER_UP: // 6
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+            case MotionEvent.ACTION_POINTER_UP:
                 isDown = false;
                 break;
             default:
@@ -370,24 +441,26 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
             case R.id.installmod_mouse_pri:
                 AWTInputBridge.sendMousePress(AWTInputEvent.BUTTON1_DOWN_MASK, isDown);
                 break;
-
             case R.id.installmod_mouse_sec:
                 AWTInputBridge.sendMousePress(AWTInputEvent.BUTTON3_DOWN_MASK, isDown);
                 break;
         }
-        if(isDown) switch(v.getId()) {
-            case R.id.installmod_window_moveup:
-                AWTInputBridge.nativeMoveWindow(0, -10);
-                break;
-            case R.id.installmod_window_movedown:
-                AWTInputBridge.nativeMoveWindow(0, 10);
-                break;
-            case R.id.installmod_window_moveleft:
-                AWTInputBridge.nativeMoveWindow(-10, 0);
-                break;
-            case R.id.installmod_window_moveright:
-                AWTInputBridge.nativeMoveWindow(10, 0);
-                break;
+
+        if (isDown) {
+            switch (v.getId()) {
+                case R.id.installmod_window_moveup:
+                    AWTInputBridge.nativeMoveWindow(0, -10);
+                    break;
+                case R.id.installmod_window_movedown:
+                    AWTInputBridge.nativeMoveWindow(0, 10);
+                    break;
+                case R.id.installmod_window_moveleft:
+                    AWTInputBridge.nativeMoveWindow(-10, 0);
+                    break;
+                case R.id.installmod_window_moveright:
+                    AWTInputBridge.nativeMoveWindow(10, 0);
+                    break;
+            }
         }
         return true;
     }
@@ -398,14 +471,33 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     }
 
     @SuppressWarnings("SuspiciousNameCombination")
-    void sendScaledMousePosition(float x, float y){
-        // Clamp positions to the borders of the usable view, then scale them
-        x = androidx.core.math.MathUtils.clamp(x, binding.textureView.getX(), binding.textureView.getX() + binding.textureView.getWidth());
-        y = androidx.core.math.MathUtils.clamp(y, binding.textureView.getY(), binding.textureView.getY() + binding.textureView.getHeight());
+    void sendScaledMousePosition(float x, float y) {
+        x = androidx.core.math.MathUtils.clamp(
+                x,
+                binding.textureView.getX(),
+                binding.textureView.getX() + binding.textureView.getWidth()
+        );
+        y = androidx.core.math.MathUtils.clamp(
+                y,
+                binding.textureView.getY(),
+                binding.textureView.getY() + binding.textureView.getHeight()
+        );
 
         AWTInputBridge.sendMousePos(
-                (int) MathUtils.map(x, binding.textureView.getX(), binding.textureView.getX() + binding.textureView.getWidth(), 0, AWTCanvasView.AWT_CANVAS_WIDTH),
-                (int) MathUtils.map(y, binding.textureView.getY(), binding.textureView.getY() + binding.textureView.getHeight(), 0, AWTCanvasView.AWT_CANVAS_HEIGHT)
+                (int) MathUtils.map(
+                        x,
+                        binding.textureView.getX(),
+                        binding.textureView.getX() + binding.textureView.getWidth(),
+                        0,
+                        AWTCanvasView.AWT_CANVAS_WIDTH
+                ),
+                (int) MathUtils.map(
+                        y,
+                        binding.textureView.getY(),
+                        binding.textureView.getY() + binding.textureView.getHeight(),
+                        0,
+                        AWTCanvasView.AWT_CANVAS_HEIGHT
+                )
         );
     }
 
@@ -424,20 +516,22 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     public void toggleVirtualMouse(View v) {
         mIsVirtualMouseEnabled = !mIsVirtualMouseEnabled;
         binding.mainTouchpad.setVisibility(mIsVirtualMouseEnabled ? View.VISIBLE : View.GONE);
-        Toast.makeText(this,
+        Toast.makeText(
+                this,
                 mIsVirtualMouseEnabled ? R.string.control_mouseon : R.string.control_mouseoff,
-                Toast.LENGTH_SHORT).show();
+                Toast.LENGTH_SHORT
+        ).show();
     }
 
     public void launchJavaRuntime(Runtime runtime, File modFile, List<String> javaArgs) {
+        initializeScopedManagers();
         JREUtils.redirectAndPrintJRELog();
         try {
-            // Enable Caciocavallo
             List<String> javaArgList = new ArrayList<>(LaunchArgs.getCacioJavaArgs(runtime.javaVersion == 8));
-            if(javaArgs != null) {
+            if (javaArgs != null) {
                 javaArgList.addAll(javaArgs);
             }
-            if(modFile != null) {
+            if (modFile != null) {
                 javaArgList.add("-jar");
                 javaArgList.add(modFile.getAbsolutePath());
             }
@@ -453,7 +547,6 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
             }
 
             Logger.appendToLog("Info: Java arguments: " + Arrays.toString(javaArgList.toArray(new String[0])));
-
             JREUtils.launchWithUtils(this, runtime, null, javaArgList, AllSettings.getJavaArgs().getValue());
         } catch (Throwable th) {
             Tools.showError(this, th, true);
@@ -463,6 +556,7 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     public void toggleKeyboard(View view) {
         binding.awtTouchChar.switchKeyboardState();
     }
+
     public void performCopy(View view) {
         AWTInputBridge.sendKey(' ', AWTInputEvent.VK_CONTROL, 1);
         AWTInputBridge.sendKey(' ', AWTInputEvent.VK_C);
@@ -476,37 +570,38 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
     }
 
     public int getJavaVersion(File modFile) {
-        try (ZipFile zipFile = new ZipFile(modFile)){
+        try (ZipFile zipFile = new ZipFile(modFile)) {
             ZipEntry manifest = zipFile.getEntry("META-INF/MANIFEST.MF");
-            if(manifest == null) return -1;
+            if (manifest == null) return -1;
 
             String manifestString = Tools.read(zipFile.getInputStream(manifest));
             String mainClass = Tools.extractUntilCharacter(manifestString, "Main-Class:", '\n');
-            if(mainClass == null) return -1;
+            if (mainClass == null) return -1;
 
             mainClass = mainClass.trim().replace('.', '/') + ".class";
             ZipEntry mainClassFile = zipFile.getEntry(mainClass);
-            if(mainClassFile == null) return -1;
+            if (mainClassFile == null) return -1;
 
             InputStream classStream = zipFile.getInputStream(mainClassFile);
             byte[] bytesWeNeed = new byte[8];
             int readCount = classStream.read(bytesWeNeed);
             classStream.close();
-            if(readCount < 8) return -1;
+            if (readCount < 8) return -1;
 
             ByteBuffer byteBuffer = ByteBuffer.wrap(bytesWeNeed);
-            if(byteBuffer.getInt() != 0xCAFEBABE) return -1;
+            if (byteBuffer.getInt() != 0xCAFEBABE) return -1;
             short minorVersion = byteBuffer.getShort();
             short majorVersion = byteBuffer.getShort();
-            Logging.i("JavaGUILauncher", majorVersion+","+minorVersion);
+            Logging.i("JavaGUILauncher", majorVersion + "," + minorVersion);
             return classVersionToJavaVersion(majorVersion);
-        }catch (Exception e) {
+        } catch (Exception e) {
             Logging.e("JavaVersion", "Exception thrown", e);
             return -1;
         }
     }
+
     public static int classVersionToJavaVersion(int majorVersion) {
-        if(majorVersion < 46) return 2; // there isn't even an arm64 port of jre 1.1 (or anything before 1.8 in fact)
+        if (majorVersion < 46) return 2;
         return majorVersion - 44;
     }
 }
